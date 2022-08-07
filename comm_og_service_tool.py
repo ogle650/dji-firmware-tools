@@ -113,6 +113,7 @@ class FLYC_PARAM_CMD(DecoratedEnum):
     LIST = 0
     GET = 1
     SET = 2
+    DUMP = 3
 
 class GIMBAL_CALIB_CMD(DecoratedEnum):
     JOINTCOARSE = 0
@@ -894,9 +895,32 @@ def do_flyc_param_request_2017_list(po, ser):
                     eprint("Response on parameter {:d} indicates end of list despite larger size reported.".format(idx))
                     # do not break - this may be error with one specific parameter
                 else:
+
+
+                    # Get param info first, so we know type and size
+                    #paraminfo = flyc_param_request_2017_get_param_info_by_name_search(po, ser, rplpayload.name)
+                    # Now get the parameter value
+                    #payload = flyc_param_request_2017_read_param_value_by_index(po, ser, paraminfo.table_no,
+                    #                                                               paraminfo.param_index)
+
                     # Print the result data
                     flyc_param_request_2017_print_response(po, idx, rplpayload, None)
             idx += 1
+
+def do_flyc_param_request_2017_get(po, ser):
+    """ Get flyc parameter value on platforms with multiple parameter tables.
+
+        Tested on the following platforms and FW versions:
+        WM100_FW_V01.00.0900 (2018-07-23)
+    """
+    do_assistant_unlock(po, ser)
+    # Get param info first, so we know type and size
+    paraminfo = flyc_param_request_2015_get_param_info_by_hash(po, ser, po.param_name)
+    # Now get the parameter value
+    rplpayload = flyc_param_request_2015_read_param_value_by_hash(po, ser, po.param_name)
+    # Print the result data
+    flyc_param_request_2015_print_response(po, None, None, True)
+    flyc_param_request_2015_print_response(po, None, paraminfo, rplpayload)
 
 def do_flyc_param_request_2017_get(po, ser):
     """ Get flyc parameter value on platforms with multiple parameter tables.
@@ -936,6 +960,40 @@ def flyc_param_request_2017_get_param_info_by_name_search(po, ser, param_name):
             idx += 1
     raise LookupError("Parameter not found during parameter info by name search request.")
     return None # unreachble
+
+def do_flyc_param_request_2017_dump_alt(po, ser):
+    """ Get flyc parameter value on platforms with multiple parameter tables, alternative way.
+
+        Tested on the following platforms and FW versions:
+        WM100_FW_V01.00.0900 (2018-07-26)
+    """
+    do_assistant_unlock(po, ser)
+
+    # Get info on tables first, so we can flatten them
+    table_attribs = []
+    for table_no in range(0, 255):
+        tab_attr = flyc_param_request_2017_get_table_attribs(po, ser, table_no)
+        if sizeof(tab_attr) <= 2:
+            if (po.verbose > 0):
+                print("Response on table no {:d} indicates end of list.".format(table_no))
+            break
+        table_attribs.append(tab_attr)
+    # Print result data header
+
+    #print header
+    flyc_param_request_2017_print_response(po, None, None, True)
+    for tab_attr in table_attribs:
+        for idx in range(0, tab_attr.entries_num):
+            # Get param info first, so we know type and size
+            paraminfo = flyc_param_request_2017_get_param_info_by_index(po, ser, tab_attr.table_no, idx)
+            # Now get the parameter value
+            rplpayload = flyc_param_request_2017_read_param_value_by_index(po, ser, tab_attr.table_no, idx)
+            if sizeof(rplpayload) <= 4:
+                if (po.verbose > 0):
+                    print("Response on parameter {:d} indicates end of list.".format(idx))
+                break
+            # Print the result data
+            flyc_param_request_2017_print_response(po, None, paraminfo, rplpayload)
 
 def do_flyc_param_request_2017_get_alt(po, ser):
     """ Get flyc parameter value on platforms with multiple parameter tables, alternative way.
@@ -1000,6 +1058,13 @@ def do_flyc_param_request(po):
                 do_flyc_param_request_2017_set(po, ser)
             else:
                 do_flyc_param_request_2017_set_alt(po, ser)
+        elif po.subcmd == FLYC_PARAM_CMD.DUMP:
+            if not po.alt:
+                # Dump command for old drones to be developped
+                raise ValueError("Unrecognized {:s} command: {:s}.".format(po.svcmd.name, po.subcmd.name))
+                #do_flyc_param_request_2017_dump(po, ser)
+            else:
+                do_flyc_param_request_2017_dump_alt(po, ser)
         else:
             raise ValueError("Unrecognized {:s} command: {:s}.".format(po.svcmd.name, po.subcmd.name))
     else:
@@ -1009,6 +1074,9 @@ def do_flyc_param_request(po):
             do_flyc_param_request_2015_get(po, ser)
         elif po.subcmd == FLYC_PARAM_CMD.SET:
             do_flyc_param_request_2015_set(po, ser)
+        elif po.subcmd == FLYC_PARAM_CMD.DUMP:
+            #Dump comman for old drones to be developped
+            raise ValueError("Unrecognized {:s} command: {:s} for this drone".format(po.svcmd.name, po.subcmd.name))
         else:
             raise ValueError("Unrecognized {:s} command: {:s}.".format(po.svcmd.name, po.subcmd.name))
 
@@ -1571,13 +1639,15 @@ def main():
             choices=['simple', '1line', '2line', 'tab', 'csv'],
             help="output format")
 
-    subpar_flycpar_get = subpar_flycpar_subcmd.add_parser('get',
-            help="get value of FlyC Param")
-    subpar_flycpar_get.add_argument('param_name', type=str,
-            help="name string of the requested parameter")
-    subpar_flycpar_get.add_argument('--alt', action='store_true',
+    subpar_flycpar_dump = subpar_flycpar_subcmd.add_parser('dump',
+            help="get multiple value of FlyC Param")
+    subpar_flycpar_dump.add_argument('-s', '--start', default=0, type=int,
+                                     help="starting index")
+    subpar_flycpar_dump.add_argument('-c', '--count', default=100, type=int,
+                                     help="amount of entries to show")
+    subpar_flycpar_dump.add_argument('--alt', action='store_true',
             help="use alternative way; try in case the normal one does not work")
-    subpar_flycpar_get.add_argument('-f', '--fmt', default='simple', type=str,
+    subpar_flycpar_dump.add_argument('-f', '--fmt', default='simple', type=str,
             choices=['simple', '1line', '2line', 'tab', 'csv'],
             help="output format")
 
